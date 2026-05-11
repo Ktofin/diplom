@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F3F6FB"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/assistantTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/assistant_quick_title"
+        android:textColor="#10233F"
+        android:textSize="24sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/assistantSubtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:text="@string/assistant_quick_subtitle"
+        android:textColor="#4D607A"
+        android:textSize="14sp" />
+
+    <TextView
+        android:id="@+id/assistantSessionLabel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:textColor="#023C69"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/assistantStatusText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textColor="#30455F"
+        android:textSize="14sp" />
+
+    <ProgressBar
+        android:id="@+id/assistantProgress"
+        style="?android:attr/progressBarStyle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/assistantResponseLabel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="18dp"
+        android:text="@string/assistant_response_label"
+        android:textColor="#10233F"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        android:layout_weight="1"
+        android:background="#FFFFFF"
+        android:padding="14dp">
+
+        <TextView
+            android:id="@+id/assistantResponseText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#1E314B"
+            android:textIsSelectable="true"
+            android:textSize="16sp" />
+    </ScrollView>
+
+    <EditText
+        android:id="@+id/assistantInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:background="#FFFFFF"
+        android:gravity="top|start"
+        android:hint="@string/assistant_input_hint"
+        android:inputType="textCapSentences|textMultiLine"
+        android:maxLines="4"
+        android:minLines="3"
+        android:padding="14dp"
+        android:textColor="#10233F"
+        android:textColorHint="#7A8CA2" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/assistantRecordButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:layout_weight="1"
+            android:text="@string/assistant_record_start" />
+
+        <Button
+            android:id="@+id/assistantSendButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/assistant_send" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:gravity="end"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/assistantOpenAppButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:text="@string/assistant_open_app"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/assistantCloseButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/assistant_close" />
+    </LinearLayout>
+</LinearLayout>

@@ -1,0 +1,30 @@
+<resources>
+  <string name="app_name">Front</string>
+  <string name="assistant_service_label">Front Assistant</string>
+  <string name="assistant_quick_title">Быстрый ассистент</string>
+  <string name="assistant_quick_subtitle">Задай вопрос голосом или текстом, получи ответ и закрой окно.</string>
+  <string name="assistant_signed_in_as">Вход выполнен: %1$s</string>
+  <string name="assistant_sign_in_required">Нужен вход в основном приложении</string>
+  <string name="assistant_sign_in_hint">Открой основное приложение и войди в аккаунт, чтобы ассистент получил токен.</string>
+  <string name="assistant_ready">Скажи или напиши вопрос.</string>
+  <string name="assistant_response_label">Ответ</string>
+  <string name="assistant_response_placeholder">Здесь появится ответ ассистента.</string>
+  <string name="assistant_input_hint">Напиши вопрос здесь</string>
+  <string name="assistant_record_start">Начать запись</string>
+  <string name="assistant_record_stop">Остановить и отправить</string>
+  <string name="assistant_send">Отправить</string>
+  <string name="assistant_open_app">Открыть приложение</string>
+  <string name="assistant_close">Закрыть</string>
+  <string name="assistant_recording">Идёт запись. Нажми ещё раз, чтобы остановить и отправить.</string>
+  <string name="assistant_transcribing">Распознаю речь и отправляю вопрос...</string>
+  <string name="assistant_answer_ready">Ответ получен.</string>
+  <string name="assistant_sending">Отправляю вопрос...</string>
+  <string name="assistant_empty_prompt">Напиши вопрос или начни запись.</string>
+  <string name="assistant_microphone_denied">Без доступа к микрофону голосовой запрос не заработает.</string>
+  <string name="assistant_record_start_failed">Не удалось начать запись: %1$s</string>
+  <string name="assistant_record_stop_failed">Не удалось завершить запись: %1$s</string>
+  <string name="assistant_request_failed">Ошибка запроса: %1$s</string>
+  <string name="assistant_error_prefix">Ошибка: %1$s</string>
+  <string name="expo_splash_screen_resize_mode" translatable="false">contain</string>
+  <string name="expo_splash_screen_status_bar_translucent" translatable="false">false</string>
+</resources>
