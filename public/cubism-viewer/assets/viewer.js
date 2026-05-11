@@ -244,6 +244,15 @@ Please call 'CubimRenderer_WebGL.startUp' function.`);return}if(X.getInstance().
 
   function handleLipSyncPayload(payload) {
     if (!payload || typeof payload !== 'object') return;
+    try {
+      const m = typeof ka === 'function' ? ka() : null;
+      if (m && typeof Aa === 'function') Aa(m);
+    } catch {}
+    if (payload.type === '_codexStopLip') {
+      const model = typeof ka === 'function' ? ka() : null;
+      stopLipSync(model, null);
+      return;
+    }
     if (payload.type === 'playLipSyncSequence') {
       startLipSyncSequence(payload.cues || [], payload.cueIntervalMs || 50);
       return;
@@ -747,135 +756,4 @@ Please call 'CubimRenderer_WebGL.startUp' function.`);return}if(X.getInstance().
     Ra = Ra.__original;
   }
 })();
-;(() => {
-  let directLipSyncTimer = null;
-
-  function getDirectLipSyncModel() {
-    return typeof ka === 'function' ? ka() : null;
-  }
-
-  function getDirectCoreModel(model) {
-    return model?._model || model?.getModel?.() || model?.internalModel?.coreModel || null;
-  }
-
-  function getDirectIdText(id) {
-    try {
-      if (typeof id === 'string') return id;
-      if (id && typeof id.getString === 'function') return id.getString();
-      return String(id || '');
-    } catch {
-      return '';
-    }
-  }
-
-  function resolveDirectMouthTarget(model) {
-    const coreModel = getDirectCoreModel(model);
-    if (!coreModel) return null;
-
-    if (model.__codexDirectMouthTarget?.coreModel === coreModel) {
-      return model.__codexDirectMouthTarget;
-    }
-
-    let mouthIndex = -1;
-    let mouthId = null;
-
-    try {
-      const ids =
-        typeof coreModel.getParameterIds === 'function'
-          ? coreModel.getParameterIds() || []
-          : coreModel._parameterIds || coreModel.parameters?.ids || [];
-      const count = Array.isArray(ids) ? ids.length : Number(coreModel.getParameterCount?.()) || 0;
-
-      for (let index = 0; index < count; index += 1) {
-        const idText = getDirectIdText(ids[index]);
-        if (/ParamMouthOpenY|MouthOpen|LipSync/i.test(idText)) {
-          mouthIndex = index;
-          mouthId = ids[index] || idText || 'ParamMouthOpenY';
-          break;
-        }
-      }
-    } catch {}
-
-    if (!mouthId) {
-      mouthId = 'ParamMouthOpenY';
-    }
-
-    const target = { coreModel, mouthIndex, mouthId };
-    model.__codexDirectMouthTarget = target;
-    return target;
-  }
-
-  function applyDirectMouthValue(value) {
-    const model = getDirectLipSyncModel();
-    const target = model ? resolveDirectMouthTarget(model) : null;
-    const coreModel = target?.coreModel;
-    if (!coreModel) return false;
-
-    const normalizedValue = Math.max(0, Math.min(1, Number(value) || 0));
-
-    try {
-      if (target.mouthIndex >= 0 && typeof coreModel.setParameterValueByIndex === 'function') {
-        coreModel.setParameterValueByIndex(target.mouthIndex, normalizedValue, 1);
-        return true;
-      }
-    } catch {}
-
-    try {
-      if (typeof coreModel.setParameterValueById === 'function') {
-        coreModel.setParameterValueById(target.mouthId, normalizedValue, 1);
-        return true;
-      }
-    } catch {}
-
-    try {
-      if (typeof coreModel.setParameterValueById === 'function') {
-        coreModel.setParameterValueById('ParamMouthOpenY', normalizedValue, 1);
-        return true;
-      }
-    } catch {}
-
-    return false;
-  }
-
-  function stopDirectLipSync() {
-    if (directLipSyncTimer) {
-      clearInterval(directLipSyncTimer);
-      directLipSyncTimer = null;
-    }
-    applyDirectMouthValue(0);
-  }
-
-  function startDirectLipSync(durationMs) {
-    stopDirectLipSync();
-
-    const startedAt = performance.now();
-    const totalMs = Math.max(300, Number(durationMs) || 1200);
-
-    directLipSyncTimer = setInterval(() => {
-      const elapsed = performance.now() - startedAt;
-      if (elapsed >= totalMs) {
-        stopDirectLipSync();
-        return;
-      }
-
-      const mouthValue = 0.15 + Math.abs(Math.sin((elapsed / 1000) * 12)) * 0.85;
-      applyDirectMouthValue(mouthValue);
-    }, 33);
-  }
-
-  window.__codexStartDirectLipSync = startDirectLipSync;
-  window.__codexStopDirectLipSync = stopDirectLipSync;
-  window.__codexHandleStagePayload = function handleStagePayload(payload) {
-    if (!payload || typeof payload !== 'object') return;
-    if (payload.type === 'lipSyncTest') {
-      startDirectLipSync(payload.durationMs || 1200);
-      return;
-    }
-    if (payload.type === 'playLipSyncSequence') {
-      const durationMs = Array.isArray(payload.cues) && payload.cues.length > 0
-        ? payload.cues.length * Math.max(16, Number(payload.cueIntervalMs) || 50)
-        : 1200;
-      startDirectLipSync(durationMs);
-    }
-  };
-})();
+/* Direct setInterval lip-sync removed: RN uses lipsync-native-bridge.js + postMessage → updateLipSync after model.update(). */
