@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "es2020",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["dom", "es2020"],
+    "strict": false,
+    "skipLibCheck": true,
+    "baseUrl": "./",
+    "paths": {
+      "@framework/*": ["../../CubismSdkForWeb-5-r.5/Framework/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}

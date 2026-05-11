@@ -1,0 +1,903 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+
+      #app {
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+
+      #status {
+        position: fixed;
+        left: 10px;
+        top: 10px;
+        padding: 6px 10px;
+        background: rgba(0, 0, 0, 0.42);
+        color: #fff;
+        font: 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        border-radius: 8px;
+        z-index: 10;
+      }
+    </style>
+    <script src="./pixi.min.js"></script>
+    <script src="./live2dcubismcore.min.js"></script>
+    <script src="./cubism4.min.js"></script>
+  </head>
+  <body>
+    <div id="status">Loading Live2D...</div>
+    <div id="app"></div>
+
+    <script>
+      let currentConfig = window.__LIVE2D_CONFIG__ || null;
+      const statusEl = document.getElementById("status");
+      const appRoot = document.getElementById("app");
+
+      let app;
+      let model;
+      let lipSyncTicker = null;
+      let lipSyncStartedAt = 0;
+      let lipSyncMode = null;
+      let lipSyncCues = [];
+      let lipSyncCueIntervalMs = 50;
+      let mouthParamIndex = -1;
+      let expressionTicker = null;
+      let activeMoodExpression = null;
+      let activeOverlayExpression = null;
+      let overlayExpiresAt = 0;
+      let activeCostume = null;
+      let baseParameters = null;
+      let viewerStarted = false;
+      let viewResizeHandler = null;
+      let webglContextLostHandler = null;
+      let fetchDebugWrapped = false;
+      const expressionCache = new Map();
+      const LIVE2D_RENDERER_PREMULTIPLIED_ALPHA_FIX = false;
+
+      function tryInitConfigFromQuery() {
+        if (currentConfig) return;
+        try {
+          const params = new URLSearchParams(window.location.search || "");
+          const modelJsonUrl = params.get("model");
+          if (!modelJsonUrl) return;
+
+          currentConfig = {
+            modelJsonUrl,
+            modelKey: params.get("modelKey") || "debug",
+            modelLabel: params.get("label") || "Debug",
+            expressions: [],
+            forceAndroidPatches: params.get("androidPatches") === "1",
+          };
+          window.__LIVE2D_CONFIG__ = currentConfig;
+        } catch (_) {}
+      }
+
+      function shouldUseAndroidPatches() {
+        return isAndroidUserAgent() || Boolean(currentConfig && currentConfig.forceAndroidPatches);
+      }
+
+      async function ensureRenderOrderOverride() {
+        if (!currentConfig || !currentConfig.modelKey || currentConfig.renderOrderOverride) {
+          return;
+        }
+
+        try {
+          const response = await fetch(
+            "/api/live2d/debug/" + encodeURIComponent(currentConfig.modelKey) + "/render-order",
+            { cache: "no-store" }
+          );
+          if (!response.ok) return;
+          const data = await response.json();
+          if (
+            data &&
+            Array.isArray(data.drawableIds) &&
+            Array.isArray(data.renderOrders) &&
+            data.drawableIds.length === data.renderOrders.length
+          ) {
+            currentConfig.renderOrderOverride = data;
+          }
+        } catch (_) {}
+      }
+
+      function isAndroidUserAgent() {
+        return typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+      }
+
+      function getViewDimensions() {
+        const vv = window.visualViewport;
+        const w = vv && vv.width > 0 ? vv.width : window.innerWidth;
+        const h = vv && vv.height > 0 ? vv.height : window.innerHeight;
+        return {
+          width: Math.max(1, Math.floor(w)),
+          height: Math.max(1, Math.floor(h)),
+        };
+      }
+
+      function getPixiResolution() {
+        const dpr = window.devicePixelRatio || 1;
+        if (!isAndroidUserAgent()) {
+          return dpr;
+        }
+        return Math.min(Math.max(dpr, 1), 2);
+      }
+
+      function applyPixiHostSettings() {
+        if (window.PIXI && PIXI.settings) {
+          PIXI.settings.FAIL_IF_MAJOR_PERFORMANCE_CAVEAT = false;
+          PIXI.settings.SPRITE_MAX_TEXTURES = 16;
+          PIXI.settings.CAN_UPLOAD_SAME_BUFFER = true;
+        }
+        try {
+          if (window.PIXI && PIXI.live2d && PIXI.live2d.settings) {
+            PIXI.live2d.settings.sortMode = "backToFront";
+          }
+        } catch (_) {}
+      }
+
+      function postPayload(payload) {
+        const msg = JSON.stringify(payload);
+        if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+          window.ReactNativeWebView.postMessage(msg);
+        }
+      }
+
+      function ensureFetchDebugWrapper() {
+        if (fetchDebugWrapped || typeof window.fetch !== "function") return;
+        fetchDebugWrapped = true;
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = function (...args) {
+          const url = args[0];
+          const urlStr =
+            typeof url === "string"
+              ? url
+              : url && typeof url === "object" && "url" in url
+                ? String(url.url)
+                : String(url);
+          return originalFetch.apply(window, args).catch((err) => {
+            postPayload({ type: "fetchError", url: urlStr, error: String(err) });
+            throw err;
+          });
+        };
+      }
+
+      function whenBaseTextureReady(baseTexture) {
+        if (!baseTexture) return Promise.resolve();
+        return new Promise((resolve) => {
+          try {
+            if (baseTexture.valid) {
+              resolve();
+              return;
+            }
+          } catch (_) {}
+          const done = () => resolve();
+          baseTexture.once("loaded", done);
+          baseTexture.once("error", done);
+        });
+      }
+
+      async function waitLive2dModelTexturesReady(live2dModel) {
+        const textures = live2dModel && live2dModel.textures ? live2dModel.textures : [];
+        await Promise.all(textures.map((tex) => whenBaseTextureReady(tex && tex.baseTexture)));
+      }
+
+      function describeError(error) {
+        if (!error) return "unknown";
+        if (typeof error === "string") return error;
+        const parts = [];
+        if (error.message) parts.push(error.message);
+        if (error.reason && error.reason.message) parts.push(error.reason.message);
+        if (error.filename) parts.push("file=" + error.filename);
+        if (error.lineno) parts.push("line=" + error.lineno);
+        if (error.colno) parts.push("col=" + error.colno);
+        if (error.stack) parts.push(error.stack);
+        if (error.reason && error.reason.stack) parts.push(error.reason.stack);
+        if (parts.length === 0) parts.push(String(error.reason || error));
+        return parts.join(" | ");
+      }
+
+      function setStatus(text) {
+        if (statusEl) {
+          statusEl.textContent = text;
+        }
+        postPayload({ type: "status", text: String(text) });
+      }
+
+      function fitModel() {
+        if (!model || !app) return;
+
+        const core = model.internalModel && model.internalModel.coreModel;
+        if (!core) return;
+        if (typeof core.getDrawableCount === "function") {
+          const drawableCount = core.getDrawableCount();
+          if (drawableCount <= 0) return;
+        }
+
+        model.anchor.set(0.5, 0.5);
+        model.x = app.screen.width / 2;
+        model.y = app.screen.height / 2;
+
+        const bounds = model.getLocalBounds();
+        if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
+
+        const targetH = app.screen.height * 0.86;
+        const targetW = app.screen.width * 0.78;
+        const scale = Math.min(targetW / bounds.width, targetH / bounds.height);
+
+        if (scale > 0 && Number.isFinite(scale)) {
+          model.scale.set(scale);
+        }
+      }
+
+      function scheduleFitAfterModelLoad() {
+        fitModel();
+        requestAnimationFrame(() => {
+          fitModel();
+          requestAnimationFrame(() => fitModel());
+        });
+        setTimeout(fitModel, 150);
+        if (model && typeof model.once === "function") {
+          const refit = () => fitModel();
+          model.once("textureLoaded", refit);
+          model.once("ready", refit);
+        }
+      }
+
+      function syncPixiViewToWindow() {
+        if (!app) return;
+        const next = getViewDimensions();
+        const res = getPixiResolution();
+        app.view.width = next.width * res;
+        app.view.height = next.height * res;
+        app.renderer.resize(next.width, next.height);
+        app.renderer.resolution = res;
+      }
+
+      function detachViewResize() {
+        if (!viewResizeHandler) return;
+        window.removeEventListener("resize", viewResizeHandler);
+        if (window.visualViewport) {
+          window.visualViewport.removeEventListener("resize", viewResizeHandler);
+        }
+        viewResizeHandler = null;
+      }
+
+      function attachViewResize() {
+        detachViewResize();
+        viewResizeHandler = () => {
+          syncPixiViewToWindow();
+          fitModel();
+        };
+        window.addEventListener("resize", viewResizeHandler);
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener("resize", viewResizeHandler);
+        }
+      }
+
+      function teardownViewer() {
+        detachViewResize();
+        if (webglContextLostHandler && app) {
+          const canvas = app.renderer?.context?.canvas || app.view;
+          try {
+            canvas?.removeEventListener?.("webglcontextlost", webglContextLostHandler);
+          } catch (_) {}
+          webglContextLostHandler = null;
+        }
+        stopLipSync();
+        if (app && expressionTicker) {
+          try {
+            app.ticker.remove(expressionTicker);
+          } catch (_) {}
+          expressionTicker = null;
+        }
+        if (app) {
+          try {
+            app.destroy(true, { children: true, texture: true });
+          } catch (_) {}
+          app = null;
+        }
+        model = null;
+        mouthParamIndex = -1;
+        if (appRoot) {
+          while (appRoot.firstChild) {
+            appRoot.removeChild(appRoot.firstChild);
+          }
+        }
+      }
+
+      function attachWebglContextLostHandler() {
+        const canvas = app?.renderer?.context?.canvas || app?.view;
+        if (!canvas || !canvas.addEventListener) return;
+        if (webglContextLostHandler) {
+          try {
+            canvas.removeEventListener("webglcontextlost", webglContextLostHandler);
+          } catch (_) {}
+          webglContextLostHandler = null;
+        }
+        webglContextLostHandler = (e) => {
+          e.preventDefault();
+          setStatus("WebGL context lost, reloading...");
+          try {
+            canvas.removeEventListener("webglcontextlost", webglContextLostHandler);
+          } catch (_) {}
+          webglContextLostHandler = null;
+          viewerStarted = false;
+          teardownViewer();
+          startViewerIfReady();
+        };
+        canvas.addEventListener("webglcontextlost", webglContextLostHandler);
+      }
+
+      function patchBrokenRenderOrders(targetModel) {
+        const coreModel = targetModel && targetModel.internalModel && targetModel.internalModel.coreModel;
+        if (!coreModel || coreModel.__renderOrdersPatched) return;
+        if (typeof coreModel.getDrawableRenderOrders !== "function") return;
+
+        const originalGetDrawableRenderOrders = coreModel.getDrawableRenderOrders.bind(coreModel);
+        const originalGetDrawableCount =
+          typeof coreModel.getDrawableCount === "function" ? coreModel.getDrawableCount.bind(coreModel) : null;
+        const overrideById =
+          currentConfig &&
+          currentConfig.renderOrderOverride &&
+          currentConfig.renderOrderOverride.drawableIds &&
+          currentConfig.renderOrderOverride.drawableIds.length > 0
+            ? new Map(currentConfig.renderOrderOverride.drawableIds.map((id, index) => [String(id || ""), index]))
+            : null;
+
+        coreModel.getDrawableRenderOrders = function () {
+          const drawableCount = originalGetDrawableCount ? Number(originalGetDrawableCount()) || 0 : 0;
+          if (overrideById && drawableCount > 0) {
+            const normalized = new Array(drawableCount);
+            let overrideCount = 0;
+            for (let index = 0; index < drawableCount; index += 1) {
+              const drawableId = String(coreModel.getDrawableId?.(index) || "");
+              const mapped = Number(overrideById.get(drawableId));
+              if (Number.isInteger(mapped) && mapped >= 0) {
+                normalized[index] = mapped;
+                overrideCount += 1;
+              } else {
+                normalized[index] = index;
+              }
+            }
+
+            if (
+              overrideCount > 0 &&
+              (!coreModel.__lastRenderOrderReportAt || performance.now() - coreModel.__lastRenderOrderReportAt > 1500)
+            ) {
+              coreModel.__lastRenderOrderReportAt = performance.now();
+              setStatus(
+                "RenderOrder override: matched=" + overrideCount + " total=" + drawableCount + " mode=drawable-sequence"
+              );
+            }
+
+            return normalized;
+          }
+
+          const orders = originalGetDrawableRenderOrders();
+
+          if (!orders || typeof orders.length !== "number" || drawableCount <= 0) {
+            return Array.from({ length: drawableCount }, (_, index) => index);
+          }
+
+          let invalidCount = 0;
+          let finiteCount = 0;
+          const rawValues = new Array(drawableCount);
+          for (let index = 0; index < drawableCount; index += 1) {
+            const raw = Number(orders[index]);
+            rawValues[index] = raw;
+            if (Number.isFinite(raw)) {
+              finiteCount += 1;
+            }
+          }
+
+          const normalized = new Array(drawableCount);
+          for (let index = 0; index < drawableCount; index += 1) {
+            const raw = rawValues[index];
+            if (Number.isInteger(raw) && raw >= 0 && raw < drawableCount) {
+              normalized[index] = raw;
+            } else {
+              invalidCount += 1;
+            }
+          }
+
+          if (invalidCount > 0 && finiteCount === drawableCount) {
+            const ranked = rawValues
+              .map((value, index) => ({ value, index }))
+              .sort((a, b) => {
+                if (a.value === b.value) return a.index - b.index;
+                return b.value - a.value;
+              });
+
+            for (let rank = 0; rank < ranked.length; rank += 1) {
+              const item = ranked[rank];
+              if (!Number.isInteger(normalized[item.index])) {
+                normalized[item.index] = rank;
+              }
+            }
+          }
+
+          for (let index = 0; index < drawableCount; index += 1) {
+            if (!Number.isInteger(normalized[index])) {
+              normalized[index] = index;
+            }
+          }
+
+          if (invalidCount > 0 && (!coreModel.__lastRenderOrderReportAt || performance.now() - coreModel.__lastRenderOrderReportAt > 1500)) {
+            coreModel.__lastRenderOrderReportAt = performance.now();
+            setStatus(
+              "RenderOrder fix: invalid=" +
+                invalidCount +
+                " total=" +
+                drawableCount +
+                " mode=" +
+                (finiteCount === drawableCount ? "ranked-desc" : "index")
+            );
+          }
+
+          return normalized;
+        };
+
+        coreModel.__renderOrdersPatched = true;
+      }
+
+      function reportRenderDiagnostics(targetModel) {
+        const coreModel = targetModel && targetModel.internalModel && targetModel.internalModel.coreModel;
+        if (!coreModel) return;
+
+        try {
+          const drawableCount =
+            typeof coreModel.getDrawableCount === "function" ? Number(coreModel.getDrawableCount()) || 0 : 0;
+          let visibleCount = 0;
+          let nonZeroOpacityCount = 0;
+          const sample = [];
+
+          for (let index = 0; index < drawableCount; index += 1) {
+            const isVisible = Boolean(
+              coreModel.getDrawableDynamicFlagIsVisible && coreModel.getDrawableDynamicFlagIsVisible(index)
+            );
+            const opacity = Number(coreModel.getDrawableOpacity && coreModel.getDrawableOpacity(index)) || 0;
+            const id = String(coreModel.getDrawableId && coreModel.getDrawableId(index) || "");
+
+            if (isVisible) visibleCount += 1;
+            if (opacity > 0.001) nonZeroOpacityCount += 1;
+
+            if (sample.length < 8 && (isVisible || opacity > 0.001)) {
+              sample.push(id || "#" + index);
+            }
+          }
+
+          let partCount = 0;
+          let nonZeroPartOpacityCount = 0;
+          if (typeof coreModel.getPartCount === "function" && typeof coreModel.getPartOpacityByIndex === "function") {
+            partCount = Number(coreModel.getPartCount()) || 0;
+            for (let index = 0; index < partCount; index += 1) {
+              const partOpacity = Number(coreModel.getPartOpacityByIndex(index)) || 0;
+              if (partOpacity > 0.001) nonZeroPartOpacityCount += 1;
+            }
+          }
+
+          setStatus(
+            "Render debug: drawables=" +
+              drawableCount +
+              " visible=" +
+              visibleCount +
+              " opacity>0=" +
+              nonZeroOpacityCount +
+              " parts=" +
+              partCount +
+              " partOpacity>0=" +
+              nonZeroPartOpacityCount +
+              " sample=" +
+              sample.join(",")
+          );
+        } catch (error) {
+          setStatus("Render debug error: " + describeError(error));
+        }
+      }
+
+      function snapshotBaseParameters() {
+        const coreModel = model && model.internalModel && model.internalModel.coreModel;
+        if (!coreModel) return;
+
+        try {
+          if (typeof coreModel.getParameterCount !== "function" || typeof coreModel.getParameterValueByIndex !== "function") {
+            return;
+          }
+
+          const count = coreModel.getParameterCount();
+          baseParameters = new Array(count);
+          for (let i = 0; i < count; i += 1) {
+            baseParameters[i] = coreModel.getParameterValueByIndex(i);
+          }
+        } catch (_) {
+          baseParameters = null;
+        }
+      }
+
+      function restoreBaseParameters() {
+        const coreModel = model && model.internalModel && model.internalModel.coreModel;
+        if (!coreModel || !baseParameters) return;
+
+        try {
+          if (typeof coreModel.setParameterValueByIndex !== "function") return;
+          for (let i = 0; i < baseParameters.length; i += 1) {
+            coreModel.setParameterValueByIndex(i, baseParameters[i], 1);
+          }
+        } catch (_) {}
+      }
+
+      function applyExpressionParameters(expressionData) {
+        const coreModel = model && model.internalModel && model.internalModel.coreModel;
+        const parameters = expressionData && expressionData.Parameters;
+        if (!coreModel || !Array.isArray(parameters)) return;
+
+        for (const parameter of parameters) {
+          const id = parameter && parameter.Id;
+          const value = Number(parameter && parameter.Value);
+          const blend = String((parameter && parameter.Blend) || "Overwrite").toLowerCase();
+
+          if (!id || Number.isNaN(value)) continue;
+
+          try {
+            if (blend === "add" && typeof coreModel.addParameterValueById === "function") {
+              coreModel.addParameterValueById(id, value, 1);
+            } else if (blend === "multiply" && typeof coreModel.multiplyParameterValueById === "function") {
+              coreModel.multiplyParameterValueById(id, value, 1);
+            } else if (typeof coreModel.setParameterValueById === "function") {
+              coreModel.setParameterValueById(id, value, 1);
+            }
+          } catch (_) {}
+        }
+      }
+
+      function ensureExpressionTicker() {
+        if (!app || expressionTicker) return;
+
+        expressionTicker = () => {
+          if (!model || (!activeMoodExpression && !activeOverlayExpression && !activeCostume)) return;
+
+          if (activeOverlayExpression && overlayExpiresAt > 0 && performance.now() >= overlayExpiresAt) {
+            activeOverlayExpression = null;
+            overlayExpiresAt = 0;
+          }
+
+          restoreBaseParameters();
+          applyExpressionParameters(activeCostume);
+          applyExpressionParameters(activeMoodExpression);
+          applyExpressionParameters(activeOverlayExpression);
+        };
+
+        app.ticker.add(expressionTicker);
+      }
+
+      async function resolveExpression(name) {
+        const expression = (((currentConfig && currentConfig.expressions) || [])).find((item) => item.name === name);
+        if (!expression) {
+          throw new Error("Expression not found: " + name);
+        }
+
+        if (expressionCache.has(name)) {
+          return expressionCache.get(name);
+        }
+
+        const isLocalProtocol = location.protocol === "file:" || location.protocol === "asset:";
+        const response = await fetch(expression.uri, isLocalProtocol ? {} : { cache: "no-store" });
+        if (!response.ok) {
+          postPayload({ type: "fetchError", url: expression.uri, status: response.status });
+          throw new Error("Expression fetch failed: " + response.status);
+        }
+
+        const data = await response.json();
+        expressionCache.set(name, data);
+        return data;
+      }
+
+      async function setMoodExpression(name) {
+        if (!model) return;
+
+        try {
+          if (!name) {
+            activeMoodExpression = null;
+            setStatus("Mood cleared");
+            return;
+          }
+
+          const expressionData = await resolveExpression(name);
+          activeMoodExpression = expressionData;
+          restoreBaseParameters();
+          applyExpressionParameters(activeCostume);
+          applyExpressionParameters(activeMoodExpression);
+          applyExpressionParameters(activeOverlayExpression);
+          setStatus("Mood: " + name);
+        } catch (err) {
+          setStatus("Mood error: " + (err && err.message ? err.message : err));
+        }
+      }
+
+      async function applyCostume(name) {
+        if (!model) return;
+
+        try {
+          if (!name) {
+            activeCostume = null;
+            restoreBaseParameters();
+            applyExpressionParameters(activeMoodExpression);
+            applyExpressionParameters(activeOverlayExpression);
+            setStatus("Costume: default");
+            return;
+          }
+
+          const expressionData = await resolveExpression(name);
+          activeCostume = expressionData;
+          restoreBaseParameters();
+          applyExpressionParameters(activeCostume);
+          applyExpressionParameters(activeMoodExpression);
+          applyExpressionParameters(activeOverlayExpression);
+          setStatus("Costume: " + name);
+        } catch (err) {
+          setStatus("Costume error: " + (err && err.message ? err.message : err));
+        }
+      }
+
+      async function triggerReaction(name, durationMs) {
+        if (!model || !name) return;
+
+        try {
+          const expressionData = await resolveExpression(name);
+          activeOverlayExpression = expressionData;
+          overlayExpiresAt = performance.now() + Math.max(400, Number(durationMs) || 2200);
+          restoreBaseParameters();
+          applyExpressionParameters(activeCostume);
+          applyExpressionParameters(activeMoodExpression);
+          applyExpressionParameters(activeOverlayExpression);
+          setStatus("Reaction: " + name);
+        } catch (err) {
+          setStatus("Reaction error: " + (err && err.message ? err.message : err));
+        }
+      }
+
+      function resolveMouthParameter() {
+        const coreModel = model && model.internalModel && model.internalModel.coreModel;
+        if (!coreModel || mouthParamIndex >= 0) return;
+
+        try {
+          if (typeof coreModel.getParameterCount === "function" && typeof coreModel.getParameterIds === "function") {
+            const count = coreModel.getParameterCount();
+            const ids = coreModel.getParameterIds();
+
+            for (let i = 0; i < count; i += 1) {
+              const idText = String(ids[i] || "");
+              if (/ParamMouthOpenY|MouthOpen|LipSync/i.test(idText)) {
+                mouthParamIndex = i;
+                break;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      function applyMouthValue(value) {
+        const coreModel = model && model.internalModel && model.internalModel.coreModel;
+        if (!coreModel) return false;
+
+        try {
+          if (typeof coreModel.setParameterValueById === "function") {
+            coreModel.setParameterValueById("ParamMouthOpenY", value, 1);
+            return true;
+          }
+        } catch (_) {}
+
+        resolveMouthParameter();
+
+        try {
+          if (mouthParamIndex >= 0 && typeof coreModel.setParameterValueByIndex === "function") {
+            coreModel.setParameterValueByIndex(mouthParamIndex, value, 1);
+            return true;
+          }
+        } catch (_) {}
+
+        return false;
+      }
+
+      function stopLipSync() {
+        if (!app || !lipSyncTicker) return;
+        app.ticker.remove(lipSyncTicker);
+        lipSyncTicker = null;
+        lipSyncMode = null;
+        lipSyncCues = [];
+        applyMouthValue(0);
+      }
+
+      function startLipSyncSequence(cues, cueIntervalMs) {
+        if (!model || !app) {
+          setStatus("Lip Sync: model not ready");
+          return;
+        }
+
+        stopLipSync();
+        lipSyncStartedAt = performance.now();
+        lipSyncMode = "sequence";
+        lipSyncCues = Array.isArray(cues) ? cues.map((value) => Number(value) || 0) : [];
+        lipSyncCueIntervalMs = Math.max(16, Number(cueIntervalMs) || 50);
+
+        if (lipSyncCues.length === 0) {
+          applyMouthValue(0);
+          setStatus("Lip Sync: empty sequence");
+          return;
+        }
+
+        lipSyncTicker = () => {
+          const elapsed = performance.now() - lipSyncStartedAt;
+          const index = Math.min(lipSyncCues.length - 1, Math.floor(elapsed / lipSyncCueIntervalMs));
+          const mouthValue = lipSyncCues[index] || 0;
+
+          if (!applyMouthValue(mouthValue)) {
+            setStatus("Lip Sync: parameter not found");
+            stopLipSync();
+            return;
+          }
+
+          if (elapsed >= lipSyncCues.length * lipSyncCueIntervalMs) {
+            stopLipSync();
+            setStatus("Lip Sync sequence finished");
+          }
+        };
+
+        app.ticker.add(lipSyncTicker);
+      }
+
+      function attachMessageBridge() {
+        const handle = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            if (payload && payload.type === "initConfig" && payload.config) {
+              currentConfig = payload.config;
+              window.__LIVE2D_CONFIG__ = payload.config;
+              startViewerIfReady();
+              return;
+            }
+            if (payload && payload.type === "setCostume") {
+              void applyCostume(payload.name || null);
+              return;
+            }
+            if (payload && payload.type === "setMood") {
+              void setMoodExpression(payload.name || null);
+              return;
+            }
+            if (payload && payload.type === "triggerReaction") {
+              void triggerReaction(payload.name || null, payload.durationMs || 2200);
+              return;
+            }
+            if (payload && payload.type === "playLipSyncSequence") {
+              startLipSyncSequence(payload.cues || [], payload.cueIntervalMs || 50);
+            }
+          } catch (_) {}
+        };
+
+        document.addEventListener("message", handle);
+        window.addEventListener("message", handle);
+      }
+
+      window.addEventListener("error", (event) => {
+        setStatus("Runtime error: " + describeError(event.error || event));
+      });
+
+      window.addEventListener("unhandledrejection", (event) => {
+        setStatus("Promise error: " + describeError(event.reason));
+      });
+
+      async function loadModel() {
+        if (!window.PIXI || !window.PIXI.live2d || !window.PIXI.live2d.Live2DModel) {
+          throw new Error("Live2D runtime not loaded");
+        }
+        if (!currentConfig || !currentConfig.modelJsonUrl) {
+          throw new Error("Live2D config not ready");
+        }
+        await ensureRenderOrderOverride();
+        ensureFetchDebugWrapper();
+        applyPixiHostSettings();
+
+        const resolution = getPixiResolution();
+        const viewSize = getViewDimensions();
+        const canvas = document.createElement("canvas");
+        canvas.style.cssText = "width:100%;height:100%;display:block;touch-action:none;";
+        canvas.width = viewSize.width * resolution;
+        canvas.height = viewSize.height * resolution;
+
+        app = new PIXI.Application({
+          view: canvas,
+          width: viewSize.width,
+          height: viewSize.height,
+          backgroundAlpha: 0,
+          antialias: false,
+          autoDensity: false,
+          resolution: resolution,
+          premultipliedAlpha: false,
+          powerPreference: "low-power",
+          depth: false,
+          stencil: false,
+          failIfMajorPerformanceCaveat: false,
+        });
+
+        appRoot.appendChild(app.view);
+        syncPixiViewToWindow();
+        setStatus("Loading model...");
+
+        const tempModel = await PIXI.live2d.Live2DModel.from(currentConfig.modelJsonUrl, {
+          autoInteract: false,
+          autoUpdate: false,
+        });
+
+        await waitLive2dModelTexturesReady(tempModel);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        model = tempModel;
+        if (shouldUseAndroidPatches()) {
+          patchBrokenRenderOrders(model);
+        }
+        app.stage.addChild(model);
+        if (typeof model.autoUpdate !== "undefined") {
+          model.autoUpdate = true;
+        }
+
+        if (LIVE2D_RENDERER_PREMULTIPLIED_ALPHA_FIX) {
+          try {
+            const renderer = model.internalModel && model.internalModel.renderer;
+            if (renderer && renderer.premultipliedAlpha !== undefined) {
+              renderer.premultipliedAlpha = true;
+            }
+          } catch (_) {}
+        }
+
+        app.stage.interactive = true;
+        model.interactive = true;
+
+        if (typeof model.on === "function") {
+          model.on("pointertap", () => {
+            postPayload({ type: "modelTapped" });
+          });
+        }
+
+        scheduleFitAfterModelLoad();
+        snapshotBaseParameters();
+        ensureExpressionTicker();
+        setTimeout(() => reportRenderDiagnostics(model), 250);
+        setTimeout(() => reportRenderDiagnostics(model), 1200);
+
+        attachViewResize();
+        attachWebglContextLostHandler();
+
+        setStatus("Ready");
+      }
+
+      function startViewerIfReady() {
+        if (viewerStarted) return;
+        tryInitConfigFromQuery();
+        if (!currentConfig || !currentConfig.modelJsonUrl) {
+          setStatus("Waiting for Live2D config...");
+          return;
+        }
+
+        viewerStarted = true;
+        loadModel().catch((error) => {
+          viewerStarted = false;
+          setStatus("Load error: " + describeError(error));
+        });
+      }
+
+      attachMessageBridge();
+      window.__startLive2DViewer = startViewerIfReady;
+      startViewerIfReady();
+    </script>
+  </body>
+</html>

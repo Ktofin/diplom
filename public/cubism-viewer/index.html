@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cubism Viewer</title>
+    <style>
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+
+      body {
+        position: relative;
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      #status {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        display: none;
+        z-index: 20;
+        padding: 6px 10px;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.4);
+        color: #fff;
+        font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        pointer-events: none;
+      }
+    </style>
+    <script src="/cubism-sdk/live2dcubismcore.min.js"></script>
+    <script type="module" crossorigin src="/cubism-viewer/assets/viewer.js"></script>
+  </head>
+  <body>
+    <div id="status">Preparing viewer...</div>
+  </body>
+  </html>
